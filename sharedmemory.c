@@ -103,6 +103,10 @@ int main() {
         exit(0);
     }
 
+    pause();
+    pause();
+    printf("Both student and supervisor have logged in\n");
+
     // ネプチューン(親プロセス)
     close(pipe_student_to_neptun[1]); // Write端を閉じる
     close(pipe_neptun_to_supervisor[0]); // Read端を閉じる

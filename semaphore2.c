@@ -1,17 +1,14 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <sys/sem.h>
-#include <sys/msg.h>
-#include <fcntl.h>          // For O_* constants
-#include <sys/stat.h>       // For mode constants
-#include <semaphore.h>
-#include <time.h>
+#include <stdio.h>          // Standard I/O operations
+#include <unistd.h>         // Provides access to the POSIX operating system API
+#include <stdlib.h>         // Standard library definitions
+#include <string.h>         // String handling functions
+#include <sys/wait.h>       // Declarations for waiting functions
+#include <signal.h>         // Signal handling utilities
+#include <sys/ipc.h>        // Interprocess communication access structure
+#include <sys/shm.h>        // Shared memory facility
+#include <sys/sem.h>        // Semaphore facility
+#include <sys/msg.h>        // Message queue facility
+#include <time.h>           // Time functions
 
 #define BUFFER_SIZE 1024   // Define a buffer size for messages and shared memory
 
@@ -30,6 +27,23 @@ void signal_supervisor_handler(int sig) {
 //     unsigned short  *array;
 // };
 
+// P-operation (wait) on a semaphore
+void p(int sem_id) {
+    struct sembuf p_op = {0, -1, SEM_UNDO};  // Define a semaphore operation to decrement (wait)
+    if (semop(sem_id, &p_op, 1) == -1) {     // Execute the semaphore operation
+        perror("P-operation failed");
+        exit(1);
+    }
+}
+
+void v(int sem_id) {
+    struct sembuf v_op = {0, 1, SEM_UNDO};   // Define a semaphore operation to increment (signal)
+    if (semop(sem_id, &v_op, 1) == -1) {
+        perror("V-operation failed");
+        exit(1);
+    }
+}
+
 struct messg {
     long mtype;         // Message type, a positive long used to identify messages
     char mtext[BUFFER_SIZE];  // Message text of BUFFER_SIZE
@@ -42,7 +56,7 @@ int main() {
     pid_t student_pid, supervisor_pid;
     int shm_id, sem_id, msg_queue;
     char *shm_ptr;
-    sem_t *sem;
+    union semun sem_union;
     key_t key;
 
     // Create shared memory
@@ -58,9 +72,14 @@ int main() {
     }
 
     // Create semaphore
-    sem = sem_open("sem_example", O_CREAT, 0644, 1);
-    if (sem == SEM_FAILED) {
-        perror("Failed to open semaphore");
+    sem_id = semget(IPC_PRIVATE, 1, IPC_CREAT | 0666);  // Allocate a semaphore
+    if (sem_id < 0) {
+        perror("Failed to create semaphore\n");
+        return 1;
+    }
+    sem_union.val = 1;  // Initialize semaphore value to 1
+    if (semctl(sem_id, 0, SETVAL, sem_union) == -1) {
+        perror("Failed to set semaphore value");
         return 1;
     }
 
@@ -104,9 +123,9 @@ int main() {
         printf("Student received question: %s\n", received_msg.mtext);
 
         // Access shared memory
-        sem_wait(sem);
+        p(sem_id);  // Wait operation on semaphore
         printf("Student reads decision: %s\n", shm_ptr);
-        sem_post(sem);
+        v(sem_id);  // Signal operation on semaphore
         shmdt(shm_ptr);  // Detach shared memory
 
         exit(0);
@@ -127,12 +146,14 @@ int main() {
 
         srand(time(NULL));  // Seed for random number generator
         int accept = rand() % 5;  // Random decision, 20% chance to reject
+        p(sem_id);  // Wait operation on semaphore before accessing shared memory
         if (accept == 0) {
             strcpy(shm_ptr, "Supervisor rejected the topic.\n");
         } else {
             strcpy(shm_ptr, "Supervisor accepted the topic.\n");
         }
         printf("Supervisor decision: %s\n", shm_ptr);
+        v(sem_id);  // Signal operation on semaphore after accessing shared memory
 
         // Send question to student via message queue
         struct messg msg;
@@ -169,7 +190,7 @@ int main() {
 
     // Cleanup shared memory, semaphore, and message queue
     shmctl(shm_id, IPC_RMID, NULL);  // Remove shared memory segment
-    sem_close(sem);
+    semctl(sem_id, 0, IPC_RMID, sem_union);  // Remove semaphore
     msgctl(msg_queue, IPC_RMID, NULL);  // Remove the message queue
 
     return 0;
